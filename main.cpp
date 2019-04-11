@@ -296,7 +296,6 @@ uint8_t **mac, int *chk) {
 	int res = 1;
 	uint8_t *tmp = (uint8_t *)calloc(ETH_ALEN, sizeof(uint8_t));
 	const u_char *packet;
-	struct timeval Tstart, Tend;
 	Arphdr *sent_arp[chk[1]];
 
 	for(int i = 0; i <= chk[1]; i++) {
@@ -327,8 +326,8 @@ _ret:
 					if((sent_arp[i]->getOpcode() == 2 && arp->getOpcode() == 1) &&
 						(memcmp(&tip, &sent_sip[i], sizeof(uint32_t)) == 0 &&
 						memcmp(&sip, &sent_tip[i], sizeof(uint32_t)) == 0)) {
-		//printf("sip : %08x, tip : %08x, sent_tip[i] : %08x, sent_sip[i] = %08x\n",
-		//sip, tip, sent_tip[i], sent_sip[i]);
+			//printf("sip : %08x, tip : %08x, sent_tip[i] : %08x, sent_sip[i] = %08x\n",
+			//sip, tip, sent_tip[i], sent_sip[i]);
 						//puts("ReInfacted");
 						//dump(&sent_packet[i], &chk[2]);
 						send_packet(handle, &sent_packet[i], &chk[2]);
@@ -341,10 +340,10 @@ _ret:
 						memcmp(&sent_tip[i], &sip, sizeof(uint32_t)) == 0) {
 						memcpy(mac[i], arp->getSha(), sizeof(mac[0]));
 						//puts("Success");
-	//for(int i = 0; i <= chk[1]; i++)
-	//printf("\n\nSender MAC Addr : %02x:%02x:%02x:%02x:%02x:%02x\n\n",
-	//**(mac + i), *(*(mac + i) + 1), *(*(mac + i) + 2),
-	//*(*(mac + i) + 3), *(*(mac + i) + 4), *(*(mac + i) + 5)); //for debugging
+			//for(int i = 0; i <= chk[1]; i++)
+			//printf("\n\nSender MAC Addr : %02x:%02x:%02x:%02x:%02x:%02x\n\n",
+			//**(mac + i), *(*(mac + i) + 1), *(*(mac + i) + 2),
+			//*(*(mac + i) + 3), *(*(mac + i) + 4), *(*(mac + i) + 5)); //for debugging
 						chk[0]++;
 						if(chk[0] > chk[1]) {
 							delete(ether);	delete(arp);
@@ -385,9 +384,9 @@ _ret:
 int setPcap(pcap_t **handle, const char* const dev) {
 	char errbuf[PCAP_ERRBUF_SIZE];
 
-	if ((*handle = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf)) == NULL) {
-			fprintf(stderr, "couldn't open device %s: %s\n", dev, errbuf);
-			return -1;
+	if((*handle = pcap_open_live(dev, BUFSIZ, 1, 1000, errbuf)) == NULL) {
+		fprintf(stderr, "couldn't open device %s: %s\n", dev, errbuf);
+		return -1;
 	}
 
 	return 0;
@@ -406,7 +405,6 @@ int main(int argc, char* argv[]) {
 	const u_char *packet[max];
 	Ethhdr *ether[max];
 	Arphdr *arp[max];
-	thread t;
 
 	for(int i = 0; i <= max; i++) {
 		smac[i] = (uint8_t *)calloc(ETH_ALEN, sizeof(uint8_t));
@@ -438,7 +436,9 @@ int main(int argc, char* argv[]) {
 	}
 	//printf("My IP : %08x\n", myip.s_addr);
 	//printf("Gw IP : %08x\n", gwip.s_addr);
-	//printf("My MAC Addr : %02x:%02x:%02x:%02x:%02x:%02x\n", *mymac, *(mymac + 1), *(mymac + 2), *(mymac + 3), *(mymac + 4), *(mymac + 5)); //for debugging
+	//printf("My MAC Addr : %02x:%02x:%02x:%02x:%02x:%02x\n",
+	//	*mymac, *(mymac + 1), *(mymac + 2), *(mymac + 3),
+	//	*(mymac + 4), *(mymac + 5)); //for debugging
 
 	for(int i = 0; i <= max; i++) {	//Target Req
 		ether[i]->ether_build(mymac);
@@ -476,15 +476,18 @@ int main(int argc, char* argv[]) {
 		//putchar('\n');
 	}
 	
-	t = thread([&] {
-		for(int i = 0; i <= max; i++) {
-			send_packet(&handle, &packet[i], &size);
-			//printf("Send packet[%d]\n", i);
-		}
-	});
-	while(1){
-		//puts("get_tinfo() called");
-		get_tinfo(&handle, (const u_char **)packet, (uint8_t **)tmac, check);
+	{
+		thread t([&] {
+			for(int i = 0; i <= max; i++) {
+				send_packet(&handle, &packet[i], &size);
+				//printf("Send packet[%d]\n", i);
+			}
+		});
+		//while(1){
+			//puts("get_tinfo() called");
+			get_tinfo(&handle, (const u_char **)packet,
+				(uint8_t **)tmac, check);
+		//}
 	}
 
 	pcap_close(handle);
@@ -493,13 +496,13 @@ int main(int argc, char* argv[]) {
 _end:
 /************************************************/
 	for(int i = 0; i <= max; i++) {
-		free(tmac[i]);	free(smac[i]);
-		free(ether[i]);	free(arp[i]);
-		free((void *)packet[i]);		packet[i] = nullptr;
-		tmac[i] = nullptr;	smac[i] = nullptr;
-		ether[i] = nullptr;	arp[i] = nullptr;
+		free(tmac[i]);			free(smac[i]);
+		free(ether[i]);			free(arp[i]);
+		free((void *)packet[i]);	packet[i] = nullptr;
+		tmac[i] = nullptr;		smac[i] = nullptr;
+		ether[i] = nullptr;		arp[i] = nullptr;
 	}
-	free(mymac);	mymac = nullptr;
+		free(mymac);			mymac = nullptr;
 
 	return 0;
 }
