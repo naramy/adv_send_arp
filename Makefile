@@ -1,7 +1,7 @@
 CXX=g++
 CPPFLAGS=-W -O2 -I/root/boost
 LDFLAGS=-L/root/boost/stage/lib
-LDLIBS=-lboost_thread -lboost_chrono -lpcap -lpthread
+LDLIBS=-lboost_system -lboost_thread -lboost_chrono -lpcap -pthread
 
 all : adv_send_arp
 
