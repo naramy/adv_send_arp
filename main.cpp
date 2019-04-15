@@ -12,6 +12,7 @@
 #include <netinet/tcp.h>		//struct tcphdr
 #include <sys/ioctl.h>			//ioctl()
 #include <net/if.h>			//struct ifreq
+#include <omp.h>			//OpenMP
 #include <boost/thread/thread.hpp>	//boost::thread
 #include <boost/chrono/chrono.hpp>	//boost::chrono
 #include <boost/noncopyable.hpp>	//boost::noncopyable
@@ -303,6 +304,7 @@ uint8_t **mac, int *chk) {
 	const u_char *packet;
 	unique_ptr<Arphdr> sent_arp[chk[1]];
 
+	#pragma omp for
 	for(int i = 0; i < chk[1]; i++)
 		sent_arp[i] = make_unique<Arphdr>(&sent_packet[i]);
 
@@ -310,11 +312,11 @@ uint8_t **mac, int *chk) {
 _ret:
 /************************************************/
 	steady_clock::time_point start = steady_clock::now();
-	#pragma omp parallel schedule(dynamic)
-	{
-		while((res = pcap_next_ex(*handle, &header, &packet)) >= 0) {
-			if(res == 0) continue;
+	while((res = pcap_next_ex(*handle, &header, &packet)) >= 0) {
+		if(res == 0) continue;
 
+		#pragma omp parallel schedule(dynamic)
+		{
 			auto ether(make_unique<Ethhdr>(&packet));
 			if(ether->getEthertype() == ETHERTYPE_ARP) {
 				auto arp(make_unique<Arphdr>(&packet));
@@ -322,27 +324,28 @@ _ret:
 				uint32_t sip = arp->getSip();
 				uint32_t sent_tip[chk[1]];
 				uint32_t sent_sip[chk[1]];
+				#pragma omp for
 				for(int i = 0; i < chk[1]; i++) {
 					sent_tip[i] = sent_arp[i]->getTip();
 					sent_sip[i] = sent_arp[i]->getSip();
 				}
-
+				
+				#pragma omp for
 				for(int i = 0; i < chk[1]; i++) {
 					if((sent_arp[i]->getOpcode() == 2 && arp->getOpcode() == 1) &&
 						(memcmp(&tip, &sent_sip[i], sizeof(tip)) == 0 &&
 						memcmp(&sip, &sent_tip[i], sizeof(sip)) == 0)) {
-						//puts("ReInfacted");
+						puts("ReInfacted");
 			//printf("sip : %08x, tip : %08x, sent_tip[i] : %08x, sent_sip[i] = %08x\n",
 			//sip, tip, sent_tip[i], sent_sip[i]);
 						//dump(&sent_packet[i], &chk[2]);
 						send_packet(handle, &sent_packet[i], &chk[2]);
 						goto _ret; //_ret is at upper region
 					}
-					#pragma parallel atomic
 					else if((sent_arp[i]->getOpcode() == 1 && arp->getOpcode() == 2) &&
 						memcmp(&sent_tip[i], &sip, sizeof(sent_tip[0])) == 0) {
 						memcpy(mac[i], arp->getSha(), sizeof(mac[0]));
-						//puts("Success");
+						puts("Success");
 			//for(int i = 0; i < chk[1]; i++)
 			//printf("\n\nSender MAC Addr : %02x:%02x:%02x:%02x:%02x:%02x\n\n",
 			//**(mac + i), *(*(mac + i) + 1), *(*(mac + i) + 2),
@@ -357,19 +360,18 @@ _ret:
 			//elif -> time-out ARP Reply resend
 			if(sent_arp[0]->getOpcode() == 1 &&
 				used_time.count() >= 10.0) {
+				#pragma omp for
 				for(int i = 0; i < chk[1]; i++)
 					if(memcmp(mac[i], tmp, sizeof(mac[i])) == 0) {
 						send_packet(handle, &sent_packet[i], &chk[2]);
 						goto _ret; //_ret is at get_tinfo()
 					}
 			} else if(sent_arp[0]->getOpcode() == 2 &&
-				used_time.count() >= 60.0) {
-				#pragma omp parallel for
-				{
-					for(int i = 0; i < chk[1]; i++) {
-						send_packet(handle, &sent_packet[i], &chk[2]);
-						goto _ret; //_ret is at get_tinfo()
-					}
+				used_time.count() >= 25.0) {
+				#pragma omp for
+				for(int i = 0; i < chk[1]; i++) {
+					send_packet(handle, &sent_packet[i], &chk[2]);
+					goto _ret; //_ret is at get_tinfo()
 				}
 			}
 		}
@@ -441,6 +443,28 @@ int main(int argc, char* argv[]) {
 	//	*mymac, *(mymac + 1), *(mymac + 2), *(mymac + 3),
 	//	*(mymac + 4), *(mymac + 5)); //for debugging
 
+
+/***************************************************************
+	This routine will be made function required 7 parameters
+
+	unique_ptr<Ethhdr> ether, unique_ptr<Arphdr> arp,
+	const int *max, struct in_addr *sip, uint8_t **smac,
+	struct in_addr *tip, uint8_t **tmac = nullptr
+
+	example)
+	unique_ptr<Ethhdr> ether[max];	-> remove
+	unique_ptr<Arphdr> arp[max];	-> remove
+	ether[i] = make_unique<Ethhdr>(&packet[i]); -> remove
+	arp[i] = make_unique<Arphdr>(&packet[i]);   -> remove
+	for(int i = 0; i < max; i++)	//Target Req
+		//Sender Req -> tip to sip
+		//Reply -> tip to sip, myip to tip,
+		//	tmac insert, tmac to smac
+		func(make_unique<Ethhdr>(&packet[i]),
+			make_unique<Arphdr>(&packet[i]),
+			max, &myip, mymac, &tip)
+***************************************************************/
+	
 	for(int i = 0; i < max; i++) {	//Target Req
 		ether[i]->ether_build(mymac);
 		arp[i]->arp_build(&myip, mymac, &tip[i]);
@@ -459,7 +483,7 @@ int main(int argc, char* argv[]) {
 		check[0] = 0;
 		//if(t.joinable())	t.join();
 	}
-
+	
 	for(int i = 0; i < max; i++) {	//Sender Req
 		ether[i]->ether_build(mymac);
 		arp[i]->arp_build(&myip, mymac, &sip[i]);
@@ -479,7 +503,8 @@ int main(int argc, char* argv[]) {
 		//if(t.joinable())	t.join();
 	}
 
-	for(int i = 0; i < max; i++) {
+	
+	for(int i = 0; i < max; i++) {	//Reply
 		ether[i]->ether_build(mymac, smac[i]);
 		arp[i]->arp_build(&tip[i], mymac, &sip[i], smac[i]);
 		//ether[i]->print();
